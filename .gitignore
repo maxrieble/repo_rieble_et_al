@@ -1,0 +1,60 @@
+# History files
+.Rhistory
+.Rapp.history
+
+# Session Data files
+.RData
+
+# User-specific files
+.Rproj.user/
+
+# Example directories
+*.Rproj.user/
+.Renviron
+.Ruserdata
+
+# RStudio files
+.rstudio-daemon/
+
+# Knitr and R Markdown report files
+*_cache/
+/cache/
+*.utf8.md
+*.knit.md
+
+# R Package development files
+# Ignore files produced by R CMD build
+*.tar.gz
+# Ignore files produced by R CMD check
+*.Rcheck/
+# Ignore files produced by R CMD install
+*.dll
+*.so
+*.o
+
+# Output folder for figures
+/Figures/
+
+# Large specific files (Optional: uncomment if out*.rdata are extremely large)
+# Results/outC.rdata
+# Results/outP.rdata
+# Results/delta.3.pred.C
+# Results/delta.3.pred.P
+
+# Windows thumbnail cache files
+Thumbs.db
+ehthumbs.db
+ehthumbs_vista.db
+
+# macOS files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux desktop files
+.directory
+
+# Temporary files created by some text editors
+*~
+*.swp
+*.swo
