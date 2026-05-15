@@ -25,7 +25,7 @@
 # =========================================
 
 # ---- 1. Setup and Directory Configuration ----
-setwd("D:/Daten/Paper/Repository") # Set to repository root
+#setwd("D:/Daten/Paper/Repository") # Set to repository root
 
 OUTPUT_FOLDER <- "Figures/" # Use "Figures" folder
 if (!dir.exists(OUTPUT_FOLDER)) {
@@ -38,7 +38,9 @@ if (!dir.exists(OUTPUT_FOLDER)) {
 # Load necessary libraries
 library(broom); library(mice); library(miceadds); library(png)
 library(fasttime); library(ggplot2); library(gridExtra); library(rjags)
-library(dplyr); library(scales); library(stringr) # Added stringr if needed
+library(dplyr); library(scales); library(stringr); library(tidyverse) # Added stringr if needed
+
+Sys.setlocale("LC_ALL", "English")
 
 # ---- 2. Helper: Load species-specific data ----
 # Loads FINAL All*.rdata (merged), raw out*, TABLE_DATA_DELTA, CATCH, Behaviors
@@ -153,17 +155,16 @@ for (i in seq_along(species_order)) {
     }
     } +
     theme_bw(base_size = 20) + # Using specific theme for this plot
-    labs(x = "Time", y = "Mean daily swimming distance (m)") +
-    scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+    labs(y = "Mean daily swimming distance (m)") +
+    scale_x_date(date_breaks = "2 months", date_labels = "%b %Y") +
     theme(
       plot.margin = unit(c(1, 1, 1, 1), "cm"),
-      axis.text = element_text(size = 16),
-      axis.title.x = element_text(size = 18, face = "plain"),
-      axis.title.y = element_text(size = 17, face = "plain"),
-      axis.text.x = element_text(angle = 45, hjust = 1)
+      axis.text = element_text(size = 19),
+      axis.title.x = element_blank(),
+      axis.title.y = element_text(size = 21, face = "plain")
     ) +
     annotate("text", x = max(PopAct$days, na.rm=T), y = max(PopAct$dists, na.rm = TRUE),
-             label = panel_labels[i], hjust = 1.1, vjust = 1.1, size = 8, fontface = "bold")
+             label = paste0("(", panel_labels[i], ") ", species_name) , hjust = 1.1, vjust = 1.1, size = 8, fontface = "bold")
   
   PopAct_plot_list[[species_name]] <- p
 }
@@ -172,28 +173,139 @@ for (i in seq_along(species_order)) {
 if(length(PopAct_plot_list) > 0) {
   out_path_popact <- file.path(OUTPUT_FOLDER, "Population_Activity_Combined.png")
   message(paste("Saving population activity plot to:", out_path_popact))
-  png(out_path_popact, width = 50, height = 14.5, units = "cm", res = 300, type = "cairo")
+  png(out_path_popact, width = 50, height = 14.5, units = "cm", res = 600, type = "cairo")
   grid.arrange(grobs = PopAct_plot_list, ncol = length(PopAct_plot_list))
   dev.off()
 } else {
   message("Skipped saving Population Activity plot.")
 }
 
-# ---- 5. PLOT 2: Cluster Plots (Base R) ----
+
+
+# ---- 5. PLOT 2: Population-level effects plots (ggplot) ---- ----------
+
+# Calculate standardisation
+Standardize_Carp  <- -min(species_data$Carp$TABLE_DATA_DELTA$DELTA,  na.rm = TRUE) + 1000
+Standardize_Perch <- -min(species_data$Perch$TABLE_DATA_DELTA$DELTA, na.rm = TRUE) + 1000
+
+# Calculate population quantiles
+# Uses hyperparameter posteriors (alpha[y,1], beta[y,1], rr[y,1]) with
+# grand-mean kone/ktwo as the population baseline
+calculate_pop_quantiles <- function(species_name, species_data, Standardize) {
+  data <- species_data[[species_name]]
+  out  <- data$out
+  
+  kone_const <- mean(out$BUGSoutput$sims.list$kone.i, na.rm = TRUE)
+  ktwo_const <- mean(out$BUGSoutput$sims.list$ktwo.i, na.rm = TRUE)
+  
+  n_samples <- out$BUGSoutput$n.keep * out$BUGSoutput$n.chains
+  PopEst    <- matrix(NA, nrow = n_samples, ncol = 10)
+  kones     <- numeric(n_samples)
+  
+  for (y in 1:n_samples) {
+    alpha <- out$BUGSoutput$sims.list$alpha[y, 1]
+    beta  <- out$BUGSoutput$sims.list$beta[y, 1]
+    rr    <- out$BUGSoutput$sims.list$rr[y, 1]
+    kone  <- kone_const
+    ktwo  <- ktwo_const
+    
+    if (any(is.na(c(alpha, beta, rr, kone, ktwo)))) {
+      kones[y] <- NA
+      next
+    }
+    
+    delta.pop.pred <- numeric(10)
+    for (j in 1:10) {
+      if (j == 1) {
+        delta.pop.pred[j] <- kone + rr * kone * (1 - kone / ktwo) - (alpha / (1 + beta * j)) * kone
+      } else {
+        delta.pop.pred[j] <- delta.pop.pred[j-1] + rr * delta.pop.pred[j-1] * (1 - delta.pop.pred[j-1] / ktwo) -
+          (alpha / (1 + beta * j)) * delta.pop.pred[j-1]
+      }
+    }
+    PopEst[y, ] <- delta.pop.pred
+    kones[y]    <- kone
+  }
+  
+  Q_func  <- function(p) apply(PopEst, 2, quantile, probs = p, na.rm = TRUE)
+  Qk_func <- function(p) quantile(kones, p, na.rm = TRUE)
+  
+  data.frame(
+    Days_since_capture = seq(-4, 10, 1),
+    Q50 = c(rep(Qk_func(0.50), 5), Q_func(0.50)) - Standardize,
+    Q25 = c(rep(Qk_func(0.25), 5), Q_func(0.25)) - Standardize,
+    Q75 = c(rep(Qk_func(0.75), 5), Q_func(0.75)) - Standardize,
+    Q05 = c(rep(Qk_func(0.025), 5), Q_func(0.025)) - Standardize,
+    Q95 = c(rep(Qk_func(0.975), 5), Q_func(0.975)) - Standardize,
+    species = species_name
+  )
+}
+
+# Build per-species data
+qCarp  <- calculate_pop_quantiles("Carp",  species_data, Standardize_Carp)
+qPerch <- calculate_pop_quantiles("Perch", species_data, Standardize_Perch)
+
+# Plot functions
+make_species_plot <- function(qdata, label) {
+  yref <- qdata$Q50[1]  # pre-capture reference (days -4 to 0 are all identical)
+  
+  ggplot(qdata, aes(x = Days_since_capture)) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey") +
+    geom_hline(yintercept = yref, linetype = "dashed", color = "grey") +
+    geom_ribbon(aes(ymin = Q75, ymax = Q95), fill = "lightblue", color = "transparent", alpha = .3) +
+    geom_ribbon(aes(ymin = Q05, ymax = Q25), fill = "lightblue", color = "transparent", alpha = .3) +
+    geom_ribbon(aes(ymin = Q25, ymax = Q75), fill = "steelblue", color = "transparent", alpha = .4) +
+    geom_line(aes(y = Q50), color = "dodgerblue4", linewidth = 1.5) +
+    annotate("text", x = -3.5, y = Inf, label = label,
+             hjust = 0, vjust = 1.8, size = 8, fontface = "bold") +
+    scale_x_continuous(name = "Days since capture", breaks = seq(-4, 10, 2)) +
+    scale_y_continuous(
+      name   = expression(paste(Delta, " (m)")),
+      breaks = scales::pretty_breaks(n = 6),
+      expand = expansion(mult = c(0.2, 0.2))
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      plot.margin      = unit(c(1, 1, 1, 1), "cm"),
+      axis.title.x     = element_text(size = 26, face = "bold"),
+      axis.title.y     = element_text(size = 26, face = "bold"),
+      axis.text.x      = element_text(size = 22, face = "bold"),
+      axis.text.y      = element_text(size = 22, face = "bold"),
+      strip.background = element_blank(),
+      strip.text       = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+}
+
+p_carp  <- make_species_plot(qCarp,  "(A) Carp")
+p_perch <- make_species_plot(qPerch, "(B) Perch")
+
+# save plot
+png(file.path(OUTPUT_FOLDER, "PopPlotDelta.png"),
+    width = 50, height = 14.5, units = "cm", res = 600, type = "cairo")
+grid.arrange(grobs = list(p_carp, p_perch), ncol = 2)
+graphics.off()
+
+message("Saved: ", file.path(OUTPUT_FOLDER, "PopPlotDelta.png"))
+
+
+
+# ---- 6. PLOT 3: Cluster Plots (Base R) ----
 # [# NOTE:] This uses the base R plotting code from your script.
 message("Generating Plot 2: Cluster Plots (Base R)...")
 
 out_path_clusters <- file.path(OUTPUT_FOLDER, "Clusters_Combined.png")
-png(out_path_clusters, width=55, height=29, units="cm", res=300, pointsize=12, type="cairo")
+png(out_path_clusters, width=55, height=29, units="cm", res=600, pointsize=12, type="cairo")
 
 par(mfrow=c(2,4), mar=c(5,5,4,2), cex.lab=1.7, cex.axis=1.5)
 
 species_order <- c("Carp","Perch")
 cluster_sizes <- list(
-  Carp = c("low n = 3", "mid n = 2", "high1 n = 3", "high2 n = 2"), # Adjust n based on final All file
-  Perch = c("low n = 4", "mid n = 4", "high1 n = 6", "high2 n = 6") # Adjust n based on final All file
+  Carp = c("Cluster low, n = 3", "Cluster mid, n = 2", "Cluster high1, n = 3", "Cluster high2, n = 2"), # Adjust n based on final All file
+  Perch = c("Cluster low, n = 4", "Cluster mid, n = 4", "Cluster high1, n = 6", "Cluster high2, n = 6") # Adjust n based on final All file
 )
 
+count <- 1
 for(species_name in species_order){
   data <- species_data[[species_name]]
   out_sp <- data$out
@@ -210,12 +322,8 @@ for(species_name in species_order){
   
   Standardize <- -min(TABLE_sp$DELTA, na.rm=TRUE) + 1000
   # Robust calculation of y-limits
-  y_min <- suppressWarnings(min(TABLE_sp$DELTA, na.rm=TRUE))
-  y_max <- suppressWarnings(max(TABLE_sp$DELTA, na.rm=TRUE))
-  if(!is.finite(y_min)) y_min <- -1000 # Default if no data
-  if(!is.finite(y_max)) y_max <- 1000  # Default if no data
-  y_min <- y_min - 300
-  y_max <- y_max + 300
+  y_min <- suppressWarnings(quantile(TABLE_sp$DELTA, 0.1, na.rm=TRUE))
+  y_max <- suppressWarnings(quantile(TABLE_sp$DELTA, 0.95, na.rm=TRUE))
   
   for(k in 1:4){
     idx <- which(All_sp$Cluster == k)
@@ -230,7 +338,7 @@ for(species_name in species_order){
     }
     
     # Adjust cluster size label based on actual data
-    current_cluster_size_label <- paste0("Cl ", k, " n = ", length(idx)) # Generic label
+    current_cluster_size_label <- cluster_sizes[[count]][k]
     
     n_iter <- out_sp$BUGSoutput$n.keep # Number of samples per chain * chains = n.keep already
     ClusterEst <- matrix(NA, nrow=n_iter, ncol=10)
@@ -288,34 +396,43 @@ for(species_name in species_order){
     }
     
     x_vals <- -4:10
+    xvals_poly <- c(x_vals, rev(x_vals))
     Q50_full <- c(rep(k50,5), Q50)
     Q25_full <- c(rep(k25,5), Q25)
     Q75_full <- c(rep(k75,5), Q75)
     Q05_full <- c(rep(k05,5), Q05)
     Q95_full <- c(rep(k95,5), Q95)
     
-    plot(x_vals, Q50_full, type="l", lwd=2, col="black",
-         ylim=c(y_min, y_max),
-         xlab="Days since capture", ylab=expression(paste(Delta,"(m)")),
-         cex.lab=1.7, cex.axis=1.5)
+    yvals_poly1 <- c(Q75_full, rev(Q95_full))
+    yvals_poly2 <- c(Q50_full, rev(Q75_full))
+    yvals_poly3 <- c(Q25_full, rev(Q50_full))
+    yvals_poly4 <- c(Q05_full, rev(Q25_full))
     
-    lines(x_vals, Q25_full, col="red", lwd=2)
-    lines(x_vals, Q75_full, col="red", lwd=2)
-    lines(x_vals, Q05_full, col="blue", lwd=2)
-    lines(x_vals, Q95_full, col="blue", lwd=2)
+    plot(x_vals, Q50_full, type = "n",
+         ylim = c(y_min, y_max),
+         xlab = "Days since capture", ylab = expression(paste(Delta, "(m)")),
+         cex.lab = 2.7, cex.axis = 2.2)
     
     abline(h=k50, lty=3, col="darkgrey", lwd=2)
     abline(v=0, lty=2)
     
-    mtext(species_name, side=3, line=1, adj=0, cex=1.3, font=3)
+    polygon(xvals_poly, yvals_poly1, col = alpha("lightblue", .3), border = "transparent")
+    polygon(xvals_poly, yvals_poly2, col = alpha("steelblue", .4), border = "transparent")
+    polygon(xvals_poly, yvals_poly3, col = alpha("steelblue", .4), border = "transparent")
+    polygon(xvals_poly, yvals_poly4, col = alpha("lightblue", .3), border = "transparent")
+    
+    lines(x_vals, Q50_full, lwd = 3.5, col = "dodgerblue4")
+    
+    text(x=min(x_vals), y=y_max, labels=species_name, adj=c(0,1), cex=2.3, font=2)
     # Use dynamically calculated N
-    text(x=max(x_vals), y=y_max, labels=current_cluster_size_label, adj=c(1,1), cex=1.6, font=2)
+    text(x=max(x_vals), y=y_max, labels=current_cluster_size_label, adj=c(1,1), cex=2.3, font=2)
   }
+  count <- count + 1
 }
 dev.off() # Close the PNG device
 
 
-# ---- 6. PLOT 3: LD/MD Cluster Boxplots (ggplot2) ----
+# ---- 7. PLOT 4: LD/MD Cluster Boxplots (ggplot2) ----
 # [# NOTE:] Code added from older plotting script
 message("Generating Plot 3: LD/MD Cluster Boxplots...")
 
@@ -328,6 +445,7 @@ metrics <- c("LD", "MD")
 
 for (species_name in species_order) {
   All_df <- species_data[[species_name]]$All
+  All_df <- All_df %>% drop_na(RankCluster)
   
   if(!all(c("LD", "MD", "Cluster", "RankCluster") %in% names(All_df))) {
     warning(paste("Skipping LD/MD plot for", species_name, "- 'All' missing columns."))
@@ -342,16 +460,34 @@ for (species_name in species_order) {
     All_df$RankCluster <- factor(All_df$Cluster, levels = 1:4, labels = cluster_labels)
   } else { levels(All_df$RankCluster) <- cluster_labels }
   
+  
   for (metric in metrics) {
+    yLab <- ifelse(metric == "MD", "Mean difference in swimming distance (m)", "Largest difference in swimming distance (m)")
+    
+    label_df <- All_df %>%
+      group_by(RankCluster) %>%
+      summarise(
+        n = sum(!is.na(.data[[metric]])),
+        .groups = "drop"
+      ) %>%
+      mutate(label = paste0("n = ", n))
+    
     p <- ggplot(All_df, aes(x = RankCluster, y = .data[[metric]])) +
       geom_boxplot(fill = ifelse(metric == "LD", "lightblue", "lightgreen"), na.rm = TRUE) +
-      labs(x = "Cluster", y = paste(metric, "Response Metric")) +
+      labs(x = "Impact cluster", y = yLab) +
+      scale_y_continuous(expand = expansion(mult = c(0.1, 0.05))) +
       theme_bw(base_size = 16) +
-      theme( axis.text = element_text(size = 14), axis.title = element_text(size = 15), plot.margin = unit(c(1.2, 1.2, 1.2, 1.2), "cm") ) +
-      annotate("text", x = 1, y = max(All_df[[metric]], na.rm = TRUE) * 1.05,
+      theme(axis.text = element_text(size = 18), axis.title = element_text(size = 19), plot.margin = unit(c(1.2, 1.2, 1.2, 1.2), "cm") ) +
+      annotate("text", x = 3.5, y = max(All_df[[metric]], na.rm = TRUE) * 1.05,
                label = paste0(panel_labels_ldmd[plot_counter], " ", species_name),
-               hjust = 0, vjust = 1, size = 6, fontface = "bold")
-    
+               hjust = 0, vjust = 1, size = 8, fontface = "bold") +
+      geom_text(
+        data = label_df,
+        aes(x = RankCluster, y = -Inf, label = label),
+        vjust = -0.5,
+        size = 6,
+        color = "black"
+      )
     # Use unique names for the list elements
     LDMD_plot_list[[paste0(species_name, "_", metric)]] <- p
     plot_counter <- plot_counter + 1
@@ -367,7 +503,7 @@ if(length(LDMD_plot_list) >= 4) { # Check if enough plots were generated
   if(length(valid_plots) == 4) {
     out_path_ldmd <- file.path(OUTPUT_FOLDER, "LDMD_Clusters_Combined.png")
     message(paste("Saving LD/MD cluster plot to:", out_path_ldmd))
-    png(out_path_ldmd, width = 40, height = 30, units = "cm", res = 300)
+    png(out_path_ldmd, width = 40, height = 30, units = "cm", res = 600)
     grid.arrange(grobs = valid_plots, nrow = 2, ncol = 2)
     dev.off()
   } else {
