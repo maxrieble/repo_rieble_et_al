@@ -462,7 +462,7 @@ for (species_name in species_order) {
   
   
   for (metric in metrics) {
-    yLab <- ifelse(metric == "MD", "Mean difference in swimming distance (m)", "Largest difference in swimming distance (m)")
+    yLab <- ifelse(metric == "MD", "Mean difference in relative\nmovement activity (m)", "Largest difference in relative\nmovement activity (m)")
     
     label_df <- All_df %>%
       group_by(RankCluster) %>%
